@@ -4,7 +4,7 @@ use crate::server::IppServerHandler;
 use anyhow;
 use async_compression::futures::bufread;
 use async_trait::async_trait;
-use ipp::attribute::IppAttribute;
+use ipp::attribute::{IppAttribute,IppAttributes};
 use ipp::model::{DelimiterTag, IppVersion, JobState, Operation, PrinterState, StatusCode};
 use ipp::payload::IppPayload;
 use ipp::request::IppRequestResponse;
@@ -25,7 +25,8 @@ pub trait SimpleIppServiceHandler: Send + Sync + 'static {
 
 pub struct SimpleIppDocument {
     pub format: Option<String>,
-    pub payload: IppPayload
+    pub payload: IppPayload,
+    pub job_attr: IppAttributes
 }
 
 #[derive(Debug, Clone, Builder)]
@@ -322,12 +323,14 @@ impl<T: SimpleIppServiceHandler> IppServerHandler for SimpleIppService<T> {
             }
             None => {}
         }
+        let job_attr = req.attributes().to_owned();
         match compression {
             None => {
                 self.handler
                     .handle_document(SimpleIppDocument{
                         format, 
-                        payload: req.into_payload()
+                        payload: req.into_payload(),
+                        job_attr,
                     })
                     .await?
             }
@@ -338,7 +341,8 @@ impl<T: SimpleIppServiceHandler> IppServerHandler for SimpleIppService<T> {
                 self.handler
                     .handle_document(SimpleIppDocument{
                         format, 
-                        payload
+                        payload,
+                        job_attr,
                     })
                     .await?
             }
