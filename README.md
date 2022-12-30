@@ -1,5 +1,8 @@
 # ippper
 
+This fork adds the ability for handlers to process information related to the job attributes.
+Useful for cases where the handler might want to know the source of the print job.
+
 [![crates.io](https://img.shields.io/crates/v/ippper.svg)](https://crates.io/crates/ippper)
 [![Released API docs](https://docs.rs/ippper/badge.svg)](https://docs.rs/ippper)
 [![BSD 3 Clause licensed](https://img.shields.io/badge/license-BSD%203%20Clause-blue)](./LICENSE.md)
