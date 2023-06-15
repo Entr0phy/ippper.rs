@@ -4,7 +4,7 @@ use crate::server::IppServerHandler;
 use anyhow;
 use async_compression::futures::bufread;
 use async_trait::async_trait;
-use ipp::attribute::{IppAttribute,IppAttributes};
+use ipp::attribute::{self, IppAttribute, IppAttributes};
 use ipp::model::{DelimiterTag, IppVersion, JobState, Operation, PrinterState, StatusCode};
 use ipp::payload::IppPayload;
 use ipp::request::IppRequestResponse;
@@ -15,10 +15,7 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait SimpleIppServiceHandler: Send + Sync + 'static {
-    async fn handle_document(
-        &self,
-        _document: SimpleIppDocument,
-    ) -> anyhow::Result<()> {
+    async fn handle_document(&self, _document: SimpleIppDocument) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -26,12 +23,13 @@ pub trait SimpleIppServiceHandler: Send + Sync + 'static {
 pub struct SimpleIppDocument {
     pub format: Option<String>,
     pub payload: IppPayload,
-    pub job_attr: IppAttributes
+    pub job_attr: IppAttributes,
+    pub print_info: PrinterInfo,
 }
 
 #[derive(Debug, Clone, Builder)]
 pub struct PrinterInfo {
-    #[builder(default = r#""IppServer".to_string()"#)]
+    #[builder(default = r#""Unknown".to_string()"#)]
     pub name: String,
     #[builder(default = r#"Some("IppServer by ippper".to_string())"#)]
     pub info: Option<String>,
@@ -96,12 +94,19 @@ impl<T: SimpleIppServiceHandler> SimpleIppService<T> {
                 IppValue::NaturalLanguage("en".to_string()),
             ),
         );
+        resp.attributes_mut().add(
+            DelimiterTag::OperationAttributes,
+            IppAttribute::new(
+                IppAttribute::PRINTER_URI,
+                IppValue::Uri(format!("ipp://{}", self.info.name.clone())),
+            ),
+        );
     }
     fn printer_attributes(&self) -> Vec<IppAttribute> {
         let mut r = vec![
             IppAttribute::new(
                 IppAttribute::PRINTER_URI_SUPPORTED,
-                IppValue::Uri(format!("ipp://{}/printer", self.host)),
+                IppValue::Uri(format!("ipp://{}", self.info.name.clone())),
             ),
             IppAttribute::new(
                 IppAttribute::URI_AUTHENTICATION_SUPPORTED,
@@ -254,14 +259,14 @@ impl<T: SimpleIppServiceHandler> SimpleIppService<T> {
         vec![
             IppAttribute::new(
                 IppAttribute::JOB_URI,
-                IppValue::Uri(format!("ipp://{}/job/{}", self.host, job_id)),
+                IppValue::Uri(format!("ipp://{}/job/{}", self.info.name.clone(), job_id)),
             ),
             IppAttribute::new(IppAttribute::JOB_ID, IppValue::Integer(job_id)),
             IppAttribute::new(IppAttribute::JOB_STATE, IppValue::Enum(job_state as i32)),
             IppAttribute::new(IppAttribute::JOB_STATE_REASONS, job_state_reasons),
             IppAttribute::new(
                 "job-printer-uri",
-                IppValue::Uri(format!("ipp://{}/printer", self.host)),
+                IppValue::Uri(format!("ipp://{}", self.info.name.clone())),
             ),
             IppAttribute::new(
                 IppAttribute::JOB_NAME,
@@ -298,7 +303,7 @@ impl<T: SimpleIppServiceHandler> IppServerHandler for SimpleIppService<T> {
                 IppValue::MimeMediaType(x) => Some(x.clone()),
                 _ => None,
             });
-            
+
         let compression = req
             .attributes()
             .groups_of(DelimiterTag::OperationAttributes)
@@ -314,12 +319,14 @@ impl<T: SimpleIppServiceHandler> IppServerHandler for SimpleIppService<T> {
         let req_id = req.header().request_id;
         let version = req.header().version;
         match format {
-            Some(ref x) => if !self.supported_document_formats.contains(x) {
-                return Err(IppError {
-                    code: StatusCode::ClientErrorDocumentFormatNotSupported,
-                    msg: StatusCode::ClientErrorDocumentFormatNotSupported.to_string(),
+            Some(ref x) => {
+                if !self.supported_document_formats.contains(x) {
+                    return Err(IppError {
+                        code: StatusCode::ClientErrorDocumentFormatNotSupported,
+                        msg: StatusCode::ClientErrorDocumentFormatNotSupported.to_string(),
+                    }
+                    .into());
                 }
-                .into());
             }
             None => {}
         }
@@ -327,10 +334,11 @@ impl<T: SimpleIppServiceHandler> IppServerHandler for SimpleIppService<T> {
         match compression {
             None => {
                 self.handler
-                    .handle_document(SimpleIppDocument{
-                        format, 
+                    .handle_document(SimpleIppDocument {
+                        format,
                         payload: req.into_payload(),
                         job_attr,
+                        print_info: self.info.clone(),
                     })
                     .await?
             }
@@ -339,10 +347,11 @@ impl<T: SimpleIppServiceHandler> IppServerHandler for SimpleIppService<T> {
                 let decoder = bufread::GzipDecoder::new(futures::io::BufReader::new(raw_payload));
                 let payload = IppPayload::new_async(decoder);
                 self.handler
-                    .handle_document(SimpleIppDocument{
-                        format, 
+                    .handle_document(SimpleIppDocument {
+                        format,
                         payload,
                         job_attr,
+                        print_info: self.info.clone(),
                     })
                     .await?
             }
@@ -354,11 +363,7 @@ impl<T: SimpleIppServiceHandler> IppServerHandler for SimpleIppService<T> {
                 .into())
             }
         }
-        let mut resp = IppRequestResponse::new_response(
-            version,
-            StatusCode::SuccessfulOk,
-            req_id,
-        );
+        let mut resp = IppRequestResponse::new_response(version, StatusCode::SuccessfulOk, req_id);
         self.add_basic_attributes(&mut resp);
         resp.attributes_mut().add(
             DelimiterTag::JobAttributes,
